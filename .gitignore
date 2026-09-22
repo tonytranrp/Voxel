@@ -1,0 +1,10 @@
+# build output and fetched dependencies
+VoxyEnginePlus/build/
+VoxyEnginePlus/lib/
+VoxyEnginePlus/vcpkg_installed/
+VoxyEnginePlus/imgui.ini
+
+# editor / tooling
+.vscode/
+.token-optimizer/
+.aider*

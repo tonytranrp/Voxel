@@ -1,0 +1,3 @@
+[submodule "VoxyEnginePlus/src/vox/shaders/lygia"]
+	path = VoxyEnginePlus/src/vox/shaders/lygia
+	url = https://github.com/patriciogonzalezvivo/lygia.git
