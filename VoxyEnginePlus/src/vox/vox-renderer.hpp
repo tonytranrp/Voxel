@@ -208,6 +208,23 @@ class VoxelRenderer
         combine_gi_compute = renderer->AddComputePipeline<ComputePush>("combine_gi", "combine-gi.slang");
         render_composite_compute = renderer->AddComputePipeline<ComputePush>("composite", "composite.slang");
 
+        // The world is a dense 65^3 chunk grid, so these are large fixed allocations. Report them
+        // before asking for them: on a machine that cannot supply this much, the failure would
+        // otherwise be an opaque allocation error.
+        {
+            double const mb = 1024.0 * 1024.0;
+            double const total = (sizeof(ChunkOccupancy) + sizeof(BrickOccupancy) +
+                                  sizeof(VoxelMaterials) + sizeof(VoxelHashmap)) /
+                                 mb;
+            std::cout << "Allocating world buffers ("
+                      << "chunks " << sizeof(ChunkOccupancy) / mb << " MB, "
+                      << "bricks " << sizeof(BrickOccupancy) / mb << " MB, "
+                      << "voxel materials " << sizeof(VoxelMaterials) / mb << " MB, "
+                      << "lighting hashmap " << sizeof(VoxelHashmap) / mb << " MB"
+                      << ") - " << total << " MB total, plus render targets." << std::endl
+                      << "This needs a GPU with at least ~4 GB of memory available." << std::endl;
+        }
+
         // Initialize occupancy buffer
         renderer->CreateBuffer<ChunkOccupancy>("chunk_occupancy", chunk_occupancy_buffer, task_chunk_occupancy_buffer);
         renderer->CreateBuffer<BrickOccupancy>("brick_occupancy", brick_occupancy_buffer, task_brick_occupancy_buffer);

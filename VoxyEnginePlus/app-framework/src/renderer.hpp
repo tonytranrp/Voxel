@@ -2,6 +2,7 @@
 #include <daxa/daxa.hpp>
 using namespace daxa::types;
 #include "image.hpp"
+#include "logger.hpp"
 #include "profiler.hpp"
 #include "terminal-colors.hpp"
 #include "window.hpp"
@@ -15,6 +16,10 @@ using namespace daxa::types;
 #include <iostream>
 #include <string>
 #include <vector>
+
+// Vulkan packs its API version into a uint32; daxa does not re-export the unpack macros.
+#define VK_API_VERSION_MAJOR_LOCAL(v) (((uint32_t)(v) >> 22u) & 0x7Fu)
+#define VK_API_VERSION_MINOR_LOCAL(v) (((uint32_t)(v) >> 12u) & 0x3FFu)
 
 struct InlineTask
 {
@@ -656,13 +661,63 @@ class Renderer
 
     /// daxa's choose_device takes the first device that satisfies the requested features,
     /// which on a laptop is usually the integrated GPU. Prefer a discrete GPU explicitly.
+    /// daxa reports a missing feature as an enum value; a name is far more actionable in a log.
+    static char const *MissingFeatureName(daxa::MissingRequiredVkFeature f)
+    {
+        static char const *names[] = {
+        "NONE",
+        "IMAGE_CUBE_ARRAY",
+        "INDEPENDENT_BLEND",
+        "TESSELLATION_SHADER",
+        "MULTI_DRAW_INDIRECT",
+        "DEPTH_CLAMP",
+        "FILL_MODE_NON_SOLID",
+        "WIDE_LINES",
+        "SAMPLER_ANISOTROPY",
+        "FRAGMENT_STORES_AND_ATOMICS",
+        "SHADER_STORAGE_IMAGE_MULTISAMPLE",
+        "SHADER_STORAGE_IMAGE_READ_WITHOUT_FORMAT",
+        "SHADER_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT",
+        "SHADER_INT64",
+        "VARIABLE_POINTERS_STORAGE_BUFFER",
+        "VARIABLE_POINTERS",
+        "BUFFER_DEVICE_ADDRESS",
+        "BUFFER_DEVICE_ADDRESS_CAPTURE_REPLAY",
+        "BUFFER_DEVICE_ADDRESS_MULTI_DEVICE",
+        "SHADER_SAMPLED_IMAGE_ARRAY_NON_UNIFORM_INDEXING",
+        "SHADER_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING",
+        "SHADER_STORAGE_IMAGE_ARRAY_NON_UNIFORM_INDEXING",
+        "DESCRIPTOR_BINDING_SAMPLED_IMAGE_UPDATE_AFTER_BIND",
+        "DESCRIPTOR_BINDING_STORAGE_IMAGE_UPDATE_AFTER_BIND",
+        "DESCRIPTOR_BINDING_STORAGE_BUFFER_UPDATE_AFTER_BIND",
+        "DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING",
+        "DESCRIPTOR_BINDING_PARTIALLY_BOUND",
+        "RUNTIME_DESCRIPTOR_ARRAY",
+        "HOST_QUERY_RESET",
+        "DYNAMIC_RENDERING",
+        "SYNCHRONIZATION2",
+        "TIMELINE_SEMAPHORE",
+        "SUBGROUP_SIZE_CONTROL",
+        "COMPUTE_FULL_SUBGROUPS",
+        "SCALAR_BLOCK_LAYOUT",
+        "ACCELERATION_STRUCTURE_CAPTURE_REPLAY",
+        "VULKAN_MEMORY_MODEL",
+        "ROBUST_BUFFER_ACCESS2",
+        "ROBUST_IMAGE_ACCESS2"
+        };
+        auto const i = static_cast<size_t>(f);
+        return i < (sizeof(names) / sizeof(names[0])) ? names[i] : "UNKNOWN";
+    }
+
     static daxa::DeviceInfo2 ChooseBestDevice(daxa::Instance &instance)
     {
         auto devices = instance.list_devices_properties();
 
         int best_index = -1;
         i32 best_score = -1;
-        std::cout << "Vulkan devices:\n";
+        u32 usable_count = 0;
+
+        std::cout << "Vulkan devices (" << devices.size() << " found):\n";
         for (u32 i = 0; i < devices.size(); i++)
         {
             auto const &d = devices[i];
@@ -683,16 +738,30 @@ class Renderer
                 score = 100;
                 break;
             case daxa::DeviceType::CPU:
-                type_name = "cpu";
+                type_name = "cpu (software - will be unusably slow)";
                 score = 1;
                 break;
             default:
                 break;
             }
 
-            std::cout << "  [" << i << "] " << reinterpret_cast<char const *>(d.device_name)
-                      << " (" << type_name << ")\n";
+            // A device that is missing a feature daxa requires cannot be used at all, however fast
+            // it looks. Scoring purely on device type would happily pick one and then fail in
+            // create_device with no explanation.
+            bool const usable = d.missing_required_feature == daxa::MissingRequiredVkFeature::NONE;
 
+            std::cout << "  [" << i << "] " << reinterpret_cast<char const *>(d.device_name)
+                      << " (" << type_name << ", Vulkan "
+                      << VK_API_VERSION_MAJOR_LOCAL(d.vulkan_api_version) << "."
+                      << VK_API_VERSION_MINOR_LOCAL(d.vulkan_api_version) << ")";
+            if (!usable)
+                std::cout << "  <-- UNUSABLE, GPU lacks: " << MissingFeatureName(d.missing_required_feature);
+            std::cout << "\n";
+
+            if (!usable)
+                continue;
+
+            usable_count++;
             if (score > best_score)
             {
                 best_score = score;
@@ -701,10 +770,30 @@ class Renderer
         }
 
         if (best_index < 0)
-            return instance.choose_device({}, {});
+        {
+            std::string msg = "No usable Vulkan device found.\n";
+            if (devices.empty())
+            {
+                msg += "\nNo Vulkan devices were reported at all. Usually this means the graphics\n"
+                       "driver does not support Vulkan, or the machine is using Microsoft's Basic\n"
+                       "Display Adapter driver. Install the GPU vendor's driver (NVIDIA / AMD /\n"
+                       "Intel). Note that the Vulkan SDK is a developer package - it does NOT add\n"
+                       "Vulkan support to a GPU.";
+            }
+            else
+            {
+                msg += "\nDevices were found, but none support everything the renderer needs\n"
+                       "(see the per-device lines above). This engine needs a reasonably modern\n"
+                       "GPU with Vulkan 1.3 class features - bindless descriptors and buffer\n"
+                       "device address in particular. Updating the graphics driver sometimes\n"
+                       "helps; older integrated graphics often cannot run it at all.";
+            }
+            throw std::runtime_error(msg);
+        }
 
         std::cout << "  -> using [" << best_index << "] "
-                  << reinterpret_cast<char const *>(devices[best_index].device_name) << "\n";
+                  << reinterpret_cast<char const *>(devices[best_index].device_name)
+                  << " (" << usable_count << " usable)\n";
 
         return daxa::DeviceInfo2{
             .physical_device_index = static_cast<u32>(best_index),
